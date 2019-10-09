@@ -309,125 +309,67 @@ class Yolo(nn.Module):
         self.blocks = parse_cfg(cfg_file)
         self.net_info, self.module_list = create_modules(self.blocks)
 
-    def forward2(self, x, cuda):
-        modules = self.blocks[1:]
-        outputs = {}
-        write = False
-        for i, mod in enumerate(modules):
-            mod_type = mod["type"]
-            if mod_type == "convolutional" or mod_type == "upsample":
-                x = self.module_list[i](x)
-            elif mod_type == "route":
-                layers = mod["layers"]
-                layers = list(map(int, layers))
-                if layers[0] > 0:
-                    layers[0] = layers[0] - i
-                if len(layers) == 1:
-                    x = outputs[i + layers[0]]
-                else:
-                    if layers[1] > 0:
-                        layers[1] -= i
-                    map1 = outputs[i + layers[0]]
-                    map2 = outputs[i + layers[1]]
-                    x = torch.cat((map1, map2), 1)      # dimensions in PyTroch are B x C x H x W
-            elif mod_type == "shortcut":
-                from_ = int(mod["from"])
-                x = outputs[i-1] + outputs[i+from_]
-            elif mod_type == "yolo":
-                print("LAYER YOLOY ::::::::::::::::::::::::::::::::::::::::::::::::::::::::")
-                anchors = self.module_list[i][0].anchors
-                inp_dim = int(self.net_info["height"])
-                num_classes = int(mod["classes"])
-                x = x.data
-                x = predict_transform(x, inp_dim, anchors, num_classes, cuda)
-                if not write:
-                    detections = x
-                    write = True
-                else:
-                    detections = torch.cat((detections, x), 1)
-                print("yolo layer detections ", detections.shape)
-            outputs[i] = x
-            print("end of layer : ", x.shape)
-        
-        return detections
-    
     def forward(self, x, CUDA):
         detections = []
         modules = self.blocks[1:]
-        outputs = {}   #We cache the outputs for the route layer
+        outputs = []   #We cache the outputs for the route layer
         
-        
-        write = 0
-        print("len modules = ", len(modules))
-        for i in range(len(modules)):        
+        for i, module in enumerate(modules):
+            module_type = module["type"]
             
-            module_type = (modules[i]["type"])
-            if module_type == "convolutional" or module_type == "upsample" or module_type == "maxpool":
-                
+            if module_type == "convolutional" or \
+               module_type == "upsample" or module_type == "maxpool":
                 x = self.module_list[i](x)
-                outputs[i] = x
-
+                outputs.append(x)
                 
             elif module_type == "route":
-                layers = modules[i]["layers"]
-                layers = [int(a) for a in layers]
+                layers = list(map(int, module["layers"]))
                 
-                if (layers[0]) > 0:
+                # express layer[0] relative to the current layer                
+                if layers[0] > 0:
                     layers[0] = layers[0] - i
 
                 if len(layers) == 1:
-                    x = outputs[i + (layers[0])]
-
+                    x = outputs[i + layers[0]]
                 else:
-                    if (layers[1]) > 0:
+                    # express layer[0] relative to the current layer                
+                    if layers[1] > 0:
                         layers[1] = layers[1] - i
-                        
+                    # get the two layers results
                     map1 = outputs[i + layers[0]]
                     map2 = outputs[i + layers[1]]
-                    
-                    
+                    # and concatenat them along depth
                     x = torch.cat((map1, map2), 1)
-                outputs[i] = x
+                outputs.append(x)
             
             elif  module_type == "shortcut":
-                from_ = int(modules[i]["from"])
-                x = outputs[i-1] + outputs[i+from_]
-                outputs[i] = x
-                
+                from_ = int(module["from"])
+                # sum theprevious layer with another one specified by from_
+                x = outputs[i - 1] + outputs[i + from_]
+                outputs.append(x)
             
-            
-            elif module_type == 'yolo':        
+            elif module_type == 'yolo':       
+                # final layer which transforms the results map into an array with one detection per line
+                # WARNING: this layer can happen different time in the full network
+                #          because different resolutions are processed
+                anchors = self.module_list[i][0].anchors   # available anchors
+                inp_dim = int(self.net_info["height"])     # input dimension
+                num_classes = int (modules[i]["classes"])  # number of classes
                 
-                anchors = self.module_list[i][0].anchors
-                #Get the input dimensions
-                inp_dim = int (self.net_info["height"])
-                
-                #Get the number of classes
-                num_classes = int (modules[i]["classes"])
-                
-                #Output the result
-                x = x.data
+                x = x.data   # get the Tensor under the Variable
+                # organize the detection with one line per BBox
                 x = predict_transform(x, inp_dim, anchors, num_classes, CUDA)
                 
-                if type(x) == int:
+                if x.numel() == 0:
                     continue
 
-                
-                if not write:
-                    detections = x
-                    write = 1
-                
-                else:
-                    detections = torch.cat((detections, x), 1)
-                
-                outputs[i] = outputs[i-1]
+                detections.append(x)
+                outputs.append(outputs[-1])
              
-        temp=outputs[0].detach().numpy()
-        print("temp size = ", temp.shape)
-        print("temp = ", temp[0, :4, :4, :4])
-        try:
-            return detections
-        except:
+        
+        if len(detections) > 0:
+            return torch.cat(detections, 1)
+        else:
             return 0
     
     

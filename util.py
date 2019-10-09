@@ -12,11 +12,11 @@ def predict_transform2(prediction, inp_dim, anchors, num_classes, cuda=False):
     stride = inp_dim // prediction.size(2)
     grid_size = inp_dim // stride
     bbox_attrs = 5 + num_classes
-    num_anchors = len(anchors)
+    nb_anchors = len(anchors)
 
-    prediction = prediction.view(batch_size, bbox_attrs*num_anchors, grid_size**2)
+    prediction = prediction.view(batch_size, bbox_attrs*nb_anchors, grid_size**2)
     prediction = prediction.transpose(1, 2).contiguous()
-    prediction = prediction.view(batch_size, grid_size**2 * num_anchors, bbox_attrs)
+    prediction = prediction.view(batch_size, grid_size**2 * nb_anchors, bbox_attrs)
     
     anchors = [(a[0]/stride, a[1]/stride) for a in anchors]
     
@@ -36,7 +36,7 @@ def predict_transform2(prediction, inp_dim, anchors, num_classes, cuda=False):
         x_offset = x_offset.cuda()
         y_offset = y_offset.cuda()
     
-    x_y_offset = torch.cat((x_offset, y_offset), 1).repeat(1, num_anchors).view(-1, 2).unsqueeze(0)
+    x_y_offset = torch.cat((x_offset, y_offset), 1).repeat(1, nb_anchors).view(-1, 2).unsqueeze(0)
     prediction[:, :, :2] += x_y_offset
     
     # apply the bbox width and height
@@ -54,58 +54,64 @@ def predict_transform2(prediction, inp_dim, anchors, num_classes, cuda=False):
     
     return prediction
     
-def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA = True):
-    batch_size = prediction.size(0)
-    stride =  inp_dim // prediction.size(2)
-    grid_size = inp_dim // stride
-    bbox_attrs = 5 + num_classes
-    num_anchors = len(anchors)
+def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=True):
+    """
+        This function transform the feature obtained at the end of the network 
+        into an array where each row is a detection
+    """
     
+    batch_size = prediction.size(0)
+    
+    stride =  inp_dim // prediction.size(2)     # the total stride of the network (from input to prediction)
+    
+    grid_size = prediction.size(2) #inp_dim // stride
+    bbox_attrs = 5 + num_classes
+    nb_anchors = len(anchors)
+    
+    # rescale the anchor to the output map size
     anchors = [(a[0]/stride, a[1]/stride) for a in anchors]
 
-    prediction = prediction.view(batch_size, bbox_attrs*num_anchors, grid_size*grid_size)
+    # B x C x H x W -> B x C x HW
+    prediction = prediction.view(batch_size, bbox_attrs*nb_anchors, grid_size*grid_size)
+    # B x C x HW -> B x HW x C
     prediction = prediction.transpose(1,2).contiguous()
-    prediction = prediction.view(batch_size, grid_size*grid_size*num_anchors, bbox_attrs)
+    # B x HW x C -> B x HW*nb_anchors x bbox_attrs (a line contained 
+    # the bbox_attrs for each anchors are split on multiple lines 
+    # so that one bbox_attrs per line)
+    prediction = prediction.view(batch_size, grid_size*grid_size*nb_anchors, bbox_attrs)
 
 
-    #Sigmoid the  centre_X, centre_Y. and object confidencce
-    prediction[:,:,0] = torch.sigmoid(prediction[:,:,0])
-    prediction[:,:,1] = torch.sigmoid(prediction[:,:,1])
-    prediction[:,:,4] = torch.sigmoid(prediction[:,:,4])
+    # Sigmoid the position and object confidence
+    prediction[:, :, 0] = torch.sigmoid(prediction[:, :, 0])
+    prediction[:, :, 1] = torch.sigmoid(prediction[:, :, 1])
+    prediction[:, :, 4] = torch.sigmoid(prediction[:, :, 4])
     
-
     
-    #Add the center offsets
-    grid_len = np.arange(grid_size)
-    a,b = np.meshgrid(grid_len, grid_len)
-    
-    x_offset = torch.FloatTensor(a).view(-1,1)
-    y_offset = torch.FloatTensor(b).view(-1,1)
-    
+    # Add the center offsets for each cell of the grid
+    y, x = np.mgrid[:grid_size, :grid_size]
+    x_offset = torch.FloatTensor(x.repeat(nb_anchors))
+    y_offset = torch.FloatTensor(y.repeat(nb_anchors))
     if CUDA:
         x_offset = x_offset.cuda()
         y_offset = y_offset.cuda()
+    prediction[:, :, 0] += x_offset.unsqueeze(0)
+    prediction[:, :, 1] += y_offset.unsqueeze(0)
     
-    x_y_offset = torch.cat((x_offset, y_offset), 1).repeat(1,num_anchors).view(-1,2).unsqueeze(0)
-    
-    prediction[:,:,:2] += x_y_offset
-      
-    #log space transform height and the width
+    # Log space transform height and the width with the anchors dimensions
     anchors = torch.FloatTensor(anchors)
-    
     if CUDA:
         anchors = anchors.cuda()
-    
     anchors = anchors.repeat(grid_size*grid_size, 1).unsqueeze(0)
-    prediction[:,:,2:4] = torch.exp(prediction[:,:,2:4])*anchors
+    prediction[:, :, 2:4] = torch.exp(prediction[:, :, 2:4]) * anchors
 
     #Softmax the class scores
-    prediction[:,:,5: 5 + num_classes] = torch.sigmoid((prediction[:,:, 5 : 5 + num_classes]))
+    prediction[:, :, 5:] = torch.sigmoid(prediction[:, :, 5:])
 
-    prediction[:,:,:4] *= stride
+    # rescale position and dimension to the input images scale
+    prediction[:, :, :4] *= stride
    
-    
     return prediction
+
     
 def filter_results2(prediction, confidence, num_classes, nms_conf=0.4):
     # Filter out (set to zero) bboxes with low confidence
