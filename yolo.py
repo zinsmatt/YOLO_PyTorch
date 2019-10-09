@@ -373,7 +373,7 @@ class Yolo(nn.Module):
             return 0
     
     
-    def load_weights2(self, file):
+    def load_weights(self, file):
         with open(file, "rb") as fin:
             header = np.fromfile(fin, dtype=np.int32, count=5)
             self.header = torch.from_numpy(header)
@@ -382,91 +382,17 @@ class Yolo(nn.Module):
             ptr = 0
             for i in range(len(self.module_list)):
                 mod_type = self.blocks[i+1]["type"]
+                
                 if mod_type == "convolutional":
                     layer = self.module_list[i]
                     batch_normalize = False
-                    if "batch_normalize" in self.blocks[i+1] and self.blocks[i+1]["batch_normalize"]:
-                        batch_normalize = True
+                    if "batch_normalize" in self.blocks[i+1].keys():
+                        batch_normalize = self.blocks[i+1]["batch_normalize"]
+
                     conv = layer[0]
                     
-                    if batch_normalize:
-                        bn = layer[1]
-                        
-                        n_bn_biases = bn.bias.numel()
-                        
-                        bn_biases = torch.from_numpy(weights[ptr:ptr+n_bn_biases])
-                        ptr += n_bn_biases
-                        
-                        bn_weights = torch.from_numpy(weights[ptr:ptr+n_bn_biases])
-                        ptr += n_bn_biases
-                        
-                        bn_running_mean = torch.from_numpy(weights[ptr:ptr+n_bn_biases])
-                        ptr += n_bn_biases
-                        
-                        bn_running_var = torch.from_numpy(weights[ptr:ptr+n_bn_biases])
-                        ptr += n_bn_biases
-                        
-                        bn_biases = bn_biases.view_as(bn.bias.data)
-                        bn_weights = bn_biases.view_as(bn.weight.data)
-                        bn_running_mean = bn_biases.view_as(bn.running_mean)
-                        bn_running_var = bn_biases.view_as(bn.running_var)
-                        
-                        bn.bias.data.copy_(bn_biases)
-                        bn.weight.data.copy_(bn_weights)
-                        bn.running_mean.copy_(bn_running_mean)
-                        bn_running_var.copy_(bn_running_var)
-                        
-                    else:
-                        num_biases = conv.bias.numel()
-                        
-                        conv_biases = torch.from_numpy(weights[ptr:ptr+num_biases])
-                        ptr += num_biases
-                        
-                        conv_biases = conv_biases.view_as(conv.bias.data)
-                        
-                        conv.bias.data.copy_(conv_biases)
-                    
-                    num_weights = conv.weight.numel()
-                    conv_weights = torch.from_numpy(weights[ptr:ptr+num_weights])
-                    ptr += num_weights
-                    conv_weights = conv_weights.view_as(conv.weight.data)
-                    conv.weight.data.copy_(conv_weights)
-                    
-                    
-    def load_weights(self, weightfile):
-            #Open the weights file
-            fp = open(weightfile, "rb")
-        
-            #The first 5 values are header information 
-            # 1. Major version number
-            # 2. Minor Version Number
-            # 3. Subversion number 
-            # 4,5. Images seen by the network (during training)
-            header = np.fromfile(fp, dtype = np.int32, count = 5)
-            self.header = torch.from_numpy(header)
-            self.seen = self.header[3]   
-            
-            weights = np.fromfile(fp, dtype = np.float32)
-            
-            ptr = 0
-            for i in range(len(self.module_list)):
-                module_type = self.blocks[i + 1]["type"]
-        
-                #If module_type is convolutional load weights
-                #Otherwise ignore.
-                
-                if module_type == "convolutional":
-                    model = self.module_list[i]
-                    try:
-                        batch_normalize = int(self.blocks[i+1]["batch_normalize"])
-                    except:
-                        batch_normalize = 0
-                
-                    conv = model[0]
-                    
-                    
                     if (batch_normalize):
-                        bn = model[1]
+                        bn = layer[1]
             
                         #Get the number of weights of Batch Norm Layer
                         num_bn_biases = bn.bias.numel()
@@ -495,7 +421,8 @@ class Yolo(nn.Module):
                         bn.weight.data.copy_(bn_weights)
                         bn.running_mean.copy_(bn_running_mean)
                         bn.running_var.copy_(bn_running_var)
-                    
+                        print(ptr)
+
                     else:
                         #Number of biases
                         num_biases = conv.bias.numel()
@@ -520,8 +447,6 @@ class Yolo(nn.Module):
                     conv_weights = conv_weights.view_as(conv.weight.data)
                     conv.weight.data.copy_(conv_weights)
 
-            
-        
     
 def get_test_input():
     img = cv2.imread("dog-cycle-car.png")
