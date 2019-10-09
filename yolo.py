@@ -352,7 +352,6 @@ class Yolo(nn.Module):
         return detections
     
     def forward(self, x, CUDA):
-        print("Start yolo::forward")
         detections = []
         modules = self.blocks[1:]
         outputs = {}   #We cache the outputs for the route layer

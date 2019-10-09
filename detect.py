@@ -32,7 +32,7 @@ def arg_parse():
     parser.add_argument("--images", dest = 'images', help = 
                         "Image / Directory containing images to perform detection upon",
                         default = "imgs", type = str)
-    parser.add_argument("--det", dest = 'det', help = 
+    parser.add_argument("--dest", dest = 'dest', help = 
                         "Image / Directory to store detections to",
                         default = "det", type = str)
     parser.add_argument("--bs", dest = "bs", help = "Batch size", default = 1)
@@ -53,10 +53,8 @@ def arg_parse():
 
 
 def load_classes(file):
-    names = []
     with open(file, "r") as fin:
-        names = fin.readlines()
-    return names[:-1]
+        return fin.readlines()[:-1]
 
 
 # Get parameters from command line
@@ -64,15 +62,15 @@ def load_classes(file):
 class Object(object):
     pass
 args = Object()
-args.images = "/users/mzins/dev/darknet/test_data" #"dog-cycle-car.png"
+args.images = "test_data" #"dog-cycle-car.png"
 
-args.batch_size = 1
+args.batch_size = 2
 args.confidence = 0.5
 args.nms_thresh = 0.4
 args.cfgfile = "cfg/yolov3.cfg"
 args.weightsfile = "yolov3.weights"
 args.reso = 416
-args.det = "det"
+args.dest = "det"
 args.nms_thresh = 0.4
 
 images = args.images
@@ -80,81 +78,88 @@ batch_size = args.batch_size
 nms_thresh = args.nms_thresh
 confidence = args.confidence
 
-start = 0
-CUDA = torch.cuda.is_available()
 
+CUDA = torch.cuda.is_available()
+start = 0
 num_classes = 80
+
+# Load the classes
 classes = load_classes("data/coco.names")
 
-#Set up the neural network
+
+# Set up the neural network and load weights
 print("Loading network.....")
 model = Yolo(args.cfgfile)
 model.load_weights(args.weightsfile)
 print("Network successfully loaded")
 
-model.net_info["height"] = args.reso
+
+# get the input dimension (we assume square images)
 inp_dim = int(model.net_info["height"])
-assert inp_dim % 32 == 0 
+assert inp_dim % 32 == 0
 assert inp_dim > 32
+
 
 #If there's a GPU availible, put the model on GPU
 if CUDA:
     model.cuda()
 
-
 #Set the model in evaluation mode
 model.eval()
 
 read_dir = time.time()
-#Detection phase
-try:
-    imlist = [osp.join(osp.realpath('.'), images, img) for img in os.listdir(images) if os.path.splitext(img)[1] == '.png' or os.path.splitext(img)[1] =='.jpeg' or os.path.splitext(img)[1] =='.jpg']
-except NotADirectoryError:
-    imlist = []
-    imlist.append(osp.join(osp.realpath('.'), images))
-except FileNotFoundError:
+
+# get list of images to process
+imlist = []
+if os.path.isdir(images):
+    for f in os.listdir(images):
+        ext = os.path.splitext(f)[1]
+        if ext == ".png" or ext == ".jpeg" or ext == ".jpg":
+            imlist.append(os.path.realpath(os.path.join(images, f)))
+elif os.path.exists(images):
+    imlist = [os.path.realpath(images)]
+else:
     print ("No file or directory with the name {}".format(images))
     exit()
+print(imlist)
+
+# create output folder
+if not os.path.exists(args.dest):
+    os.makedirs(args.dest)
     
-if not os.path.exists(args.det):
-    os.makedirs(args.det)
     
 load_batch = time.time()
 
-batches = list(map(prep_image, imlist, [inp_dim for x in range(len(imlist))]))
-im_batches = [x[0] for x in batches]
-orig_ims = [x[1] for x in batches]
-im_dim_list = [x[2] for x in batches]
+# correctly resize images and create one batch per image
+im_batches, orig_ims, im_dim_list = [], [], []
+for f in imlist:
+    b, o, d = prepare_image(f, inp_dim)
+    im_batches.append(b)
+    orig_ims.append(o)
+    im_dim_list.append(d)
+    
 im_dim_list = torch.FloatTensor(im_dim_list).repeat(1,2)
-
-
-
 if CUDA:
     im_dim_list = im_dim_list.cuda()
 
 leftover = 0
-
 if (len(im_dim_list) % batch_size):
     leftover = 1
     
-    
+# create the batches by concatenating images
 if batch_size != 1:
-    num_batches = len(imlist) // batch_size + leftover            
-    im_batches = [torch.cat((im_batches[i*batch_size : min((i +  1)*batch_size,
-                        len(im_batches))]))  for i in range(num_batches)]        
+    num_batches = len(imlist) // batch_size + (len(imlist) % batch_size)
+    im_batches = [torch.cat(im_batches[i*batch_size:min(len(imlist), (i+1)*batch_size)]) for i in range(num_batches)]
 
+
+
+# Process batches
 
 i = 0
-
-
 write = False
-#model(get_test_input(inp_dim, CUDA), CUDA)
 
 start_det_loop = time.time()
-
 objs = {}
-
-
 
 for batch in im_batches:
     #load the image 
@@ -162,31 +167,12 @@ for batch in im_batches:
     if CUDA:
         batch = batch.cuda()
     
-    print("batch shape = ", batch.shape)
-
-    #Apply offsets to the result predictions
-    #Tranform the predictions as described in the YOLO paper
-    #flatten the prediction vector 
-    # B x (bbox cord x no. of anchors) x grid_w x grid_h --> B x bbox x (all the boxes) 
-    # Put every proposed box as a row.
+    
     with torch.no_grad():
         prediction = model(Variable(batch), CUDA)
-    pred = prediction.cpu().numpy()
-    print("pred.shape = ", pred.shape)
-    print("===> \n", pred[:4, :4])
-    torch.save(prediction, "prediction_ref.pt")
-#        prediction = prediction[:,scale_indices]
 
-    
-    #get the boxes with object confidence > threshold
-    #Convert the cordinates to absolute coordinates
-    #perform NMS on these boxes, and save the results 
-    #I could have done NMS and saving seperately to have a better abstraction
-    #But both these operations require looping, hence 
-    #clubbing these ops in one loop instead of two. 
-    #loops are slower than vectorised operations. 
-    
-    prediction = filter_results(prediction, confidence, num_classes, nms = True, nms_conf = args.nms_thresh)
+
+    prediction = filter_results(prediction, confidence, num_classes, nms=True, nms_conf=args.nms_thresh)
     
     
     if type(prediction) == int:
