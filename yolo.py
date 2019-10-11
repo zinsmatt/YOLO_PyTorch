@@ -4,17 +4,15 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 from util import *
-import cv2
 
 
-def parse_cfg2(file):
+def parse_cfg(file):
     lines = []
     with open(file, "r") as fin:
         lines = fin.readlines()
     layers = []
     layer = {}
     for l in lines:
-        print(l)
         if len(l) <= 2:
             continue
         else:
@@ -32,111 +30,7 @@ def parse_cfg2(file):
         layers.append(layer)
     return layers
 
-def parse_cfg(cfgfile):
-    """
-    Takes a configuration file
-    
-    Returns a list of blocks. Each blocks describes a block in the neural
-    network to be built. Block is represented as a dictionary in the list
-    
-    """
-    file = open(cfgfile, 'r')
-    lines = file.read().split('\n')     #store the lines in a list
-    lines = [x for x in lines if len(x) > 0] #get read of the empty lines 
-    lines = [x for x in lines if x[0] != '#']  
-    lines = [x.rstrip().lstrip() for x in lines]
 
-    
-    block = {}
-    blocks = []
-    
-    for line in lines:
-        if line[0] == "[":               #This marks the start of a new block
-            if len(block) != 0:
-                blocks.append(block)
-                block = {}
-            block["type"] = line[1:-1].rstrip()
-        else:
-            key,value = line.split("=")
-            block[key.rstrip()] = value.lstrip()
-    blocks.append(block)
-
-    return blocks
-#    print('\n\n'.join([repr(x) for x in blocks]))
-
-def create_modules2(blocks):
-    net_info = blocks[0]
-    if net_info["type"] != "net":
-        print("Error the first block does not contain the net parameters")
-    module_list = nn.ModuleList()
-    prev_filters = 3    # nb of filters in the previous layer 
-                        # (this is the depth of the current feature map)
-    output_filters = [] # keep track of the number of output filter of each block
-    
-    for i, layer in enumerate(blocks[1:]):
-        module = nn.Sequential()
-        
-        if layer["type"] == "convolutional":
-            activation = layer["activation"]
-            batch_norm = False
-            if "batch_normalize" in layer.keys():
-                batch_norm = bool(layer["batch_normalize"])
-            bias = not batch_norm
-            filters = int(layer["filters"])
-            use_padding = bool(layer["pad"])
-            kernel_size = int(layer["size"])
-            stride = int(layer["stride"])
-            
-            pad = 0
-            if use_padding:
-                pad = (kernel_size - 1) // 2
-            
-            conv = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias=bias)
-            module.add_module("conv_%d" % i, conv)
-            
-            if batch_norm:
-                bn = nn.BatchNorm2d(filters)
-                module.add_module("batch_norm_%d" % i, bn)
-            
-            if activation == "leaky":
-                activ = nn.LeakyReLU(0.1, inplace=True)
-                module.add_module("leaky_%d" % i, activ)
-        elif layer["type"] == "upsample":
-            stride = int(layer["stride"])
-            upsample = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-            module.add_module("upsample_%d" % i, upsample)
-        elif layer["type"] == "route":
-            layer["layers"] = layer["layers"].split(",")
-            start = int(layer["layers"][0])
-            end = 0
-            if len(layer["layers"]) > 1:
-                end = int(layer["layers"][1])
-            if start > 0:
-                start = start - i
-            if end > 0:
-                end = end - i
-            route = EmptyLayer()
-            module.add_module("route_%d" % i, route)
-            filters = output_filters[i + start]
-            if end < 0:
-                filters += output_filters[i + end]
-            
-        elif layer["type"] == "shortcut":
-            shortcut = EmptyLayer()
-            module.add_module("shortcut_%d" % i, shortcut)
-        elif layer["type"] == "yolo":
-            mask = list(map(int, layer["mask"].split(",")))
-            
-            anchors = list(map(int, layer["anchors"].split(",")))
-            anchors = [(anchors[i], anchors[i+1]) for i in range(0, len(anchors), 2)]
-            anchors = [anchors[i] for i in mask]
-            
-            detection = DetectionLayer(anchors)
-            module.add_module("Detection_%d" % i, detection)
-        module_list.append(module)
-        prev_filters = filters
-        output_filters.append(filters)
-    return net_info, module_list
 
 def create_modules(blocks):
     net_info = blocks[0]     #Captures the information about the input and pre-processing    
@@ -272,7 +166,7 @@ def create_modules(blocks):
             
             
         else:
-            print("Something I dunno")
+            print("Unkown layer", x["type"])
             assert False
 
 
@@ -282,20 +176,23 @@ def create_modules(blocks):
         index += 1
         
     
-    return (net_info, module_list)
+    return net_info, module_list
 
 
 
 
 class EmptyLayer(nn.Module):
+    
     def __init__(self):
         super(EmptyLayer, self).__init__()
         
 
 class DetectionLayer(nn.Module):
+    
     def __init__(self, anchors):
         super(DetectionLayer, self).__init__()
         self.anchors = anchors
+        
     def forward(self, x, inp_dim, num_classes, confidence):
         x = x.data
         global CUDA
@@ -303,7 +200,10 @@ class DetectionLayer(nn.Module):
         prediction = predict_transform(prediction, inp_dim, self.anchors, num_classes, confidence, CUDA)
         return prediction
 
+
+
 class Yolo(nn.Module):
+    
     def __init__(self, cfg_file):
         super(Yolo, self).__init__()
         self.blocks = parse_cfg(cfg_file)
@@ -438,22 +338,28 @@ class Yolo(nn.Module):
                     #Let us load the weights for the Convolutional layers
                     num_weights = conv.weight.numel()
                     
+#                    noise = (torch.rand((num_weights), dtype=torch.float32) - 0.5) / 100
+                    
                     #Do the same as above for weights
-                    conv_weights = torch.from_numpy(weights[ptr:ptr+num_weights])
+                    conv_weights = torch.from_numpy(weights[ptr:ptr+num_weights]) + noise
                     ptr = ptr + num_weights
                     
                     conv_weights = conv_weights.view_as(conv.weight.data)
                     conv.weight.data.copy_(conv_weights)
 
     
-def get_test_input():
-    img = cv2.imread("dog-cycle-car.png")
-    img = cv2.resize(img, (416, 416))
-    img_ = img[:, :, ::-1].transpose((2, 0, 1)) # BGR -> RGB and HxWxC -> CxHxW
-    img_ = img_[np.newaxis, :, :, :]/255.0
-    img_ = torch.from_numpy(img_).float()
-    img_ = Variable(img_)
-    return img_, img
+    
+    
+    
+    
+#def get_test_input():
+#    img = cv2.imread("dog-cycle-car.png")
+#    img = cv2.resize(img, (416, 416))
+#    img_ = img[:, :, ::-1].transpose((2, 0, 1)) # BGR -> RGB and HxWxC -> CxHxW
+#    img_ = img_[np.newaxis, :, :, :]/255.0
+#    img_ = torch.from_numpy(img_).float()
+#    img_ = Variable(img_)
+#    return img_, img
 
 
 #if __name__ == "__main__":

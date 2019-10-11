@@ -64,7 +64,7 @@ class Object(object):
 args = Object()
 args.images = "test_data" #"dog-cycle-car.png"
 
-args.batch_size = 2
+args.batch_size = 1
 args.confidence = 0.5
 args.nms_thresh = 0.4
 args.cfgfile = "cfg/yolov3.cfg"
@@ -138,7 +138,7 @@ for f in imlist:
     orig_ims.append(o)
     im_dim_list.append(d)
     
-im_dim_list = torch.FloatTensor(im_dim_list).repeat(1,2)
+im_dim_list = torch.FloatTensor(im_dim_list).repeat(1, 2)
 if CUDA:
     im_dim_list = im_dim_list.cuda()
 
@@ -155,13 +155,12 @@ if batch_size != 1:
 
 # Process batches
 
-i = 0
 write = False
 
 start_det_loop = time.time()
-objs = {}
 
-for batch in im_batches:
+output = []
+for i, batch in enumerate(im_batches):
     #load the image 
     start = time.time()
     if CUDA:
@@ -171,84 +170,78 @@ for batch in im_batches:
     with torch.no_grad():
         prediction = model(Variable(batch), CUDA)
 
-
+    # filter the prediction with Non-Maxima Suppression
     prediction = filter_results(prediction, confidence, num_classes, nms=True, nms_conf=args.nms_thresh)
     
-    
-    if type(prediction) == int:
-        i += 1
+
+    if prediction.size(0) == 0:
         continue
 
     end = time.time()
     
                 
-#        print(end - start)
-
-        
-
-    prediction[:,0] += i*batch_size
-    
-
-        
+    # Compute the real image indices
+    prediction[:, 0] += i * batch_size
       
-    if not write:
-        output = prediction
-        write = 1
-    else:
-        print("output shape = ", output.shape)
-        print("prediction shape = ", prediction.shape)
-        output = torch.cat((output,prediction))
-        
+#    if not write:
+#        output = prediction
+#        write = 1
+#    else:
+#        print("output shape = ", output.shape)
+#        print("prediction shape = ", prediction.shape)
+#        output = torch.cat((output,prediction))
+#        
+    output.append(prediction)
     
-    
-
     for im_num, image in enumerate(imlist[i*batch_size: min((i +  1)*batch_size, len(imlist))]):
         im_id = i*batch_size + im_num
-        objs = [classes[int(x[-1])] for x in output if int(x[0]) == im_id]
+        objs = [classes[int(x[-1])] for x in output[-1] if int(x[0]) == im_id]
         print("{0:20s} predicted in {1:6.3f} seconds".format(image.split("/")[-1], (end - start)/batch_size))
         print("{0:20s} {1:s}".format("Objects Detected:", " ".join(objs)))
         print("----------------------------------------------------------")
-    i += 1
 
     
     if CUDA:
         torch.cuda.synchronize()
 
-try:
-    output
-except NameError:
+if len(output) == 0:
     print("No detections were made")
     exit()
     
-im_dim_list = torch.index_select(im_dim_list, 0, output[:,0].long())
+output = torch.cat(output)
+    
 
-scaling_factor = torch.min(inp_dim/im_dim_list,1)[0].view(-1,1)
+print("im_dim_list = ", im_dim_list)
 
+# duplaicate im_dim_list to have one dim per detection
+im_dim_list = torch.index_select(im_dim_list, 0, output[:, 0].long())
 
+# get the scaling factor
+scaling_factor = torch.min(inp_dim / im_dim_list, 1)[0].view(-1, 1)
+
+# correct scaling of the detections
 output[:,[1,3]] -= (inp_dim - scaling_factor*im_dim_list[:,0].view(-1,1))/2
 output[:,[2,4]] -= (inp_dim - scaling_factor*im_dim_list[:,1].view(-1,1))/2
+output[:, 1:5] /= scaling_factor
 
 
-
-output[:,1:5] /= scaling_factor
-
+# clamp to image size
 for i in range(output.shape[0]):
-    output[i, [1,3]] = torch.clamp(output[i, [1,3]], 0.0, im_dim_list[i,0])
-    output[i, [2,4]] = torch.clamp(output[i, [2,4]], 0.0, im_dim_list[i,1])
+    output[i, [1, 3]] = torch.clamp(output[i, [1, 3]], 0.0, im_dim_list[i, 0]-1)
+    output[i, [2, 4]] = torch.clamp(output[i, [2, 4]], 0.0, im_dim_list[i, 1]-1)
     
-    
+
 output_recast = time.time()
-
-
 class_load = time.time()
-
 colors = pkl.load(open("pallete", "rb"))
-
-
 draw = time.time()
 
 
+
 def write(x, batches, results):
+    """ 
+        Draw a BBox 
+    """
     c1 = tuple(x[1:3].int())
     c2 = tuple(x[3:5].int())
     img = results[int(x[0])]
@@ -262,12 +255,11 @@ def write(x, batches, results):
     cv2.putText(img, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN, 1, [225,255,255], 1)
     return img
 
-        
+# draw all the BBoxes
 list(map(lambda x: write(x, im_batches, orig_ims), output))
   
-#det_names = pd.Series(imlist).apply(lambda x: "{}/det_{}".format(args.det,x.split("/")[-1]))
-det_names = ["det/det_{}.png".format(i) for i in range(len(imlist))]
 
+det_names = ["det/det_{}.png".format(i) for i in range(len(imlist))]
 list(map(cv2.imwrite, det_names, orig_ims))
 
 end = time.time()
