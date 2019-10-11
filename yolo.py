@@ -421,8 +421,6 @@ class Yolo(nn.Module):
                         bn.weight.data.copy_(bn_weights)
                         bn.running_mean.copy_(bn_running_mean)
                         bn.running_var.copy_(bn_running_var)
-                        print(ptr)
-
                     else:
                         #Number of biases
                         num_biases = conv.bias.numel()
