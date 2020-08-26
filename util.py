@@ -131,7 +131,7 @@ def filter_results(prediction, confidence, num_classes, nms=True, nms_conf=0.4):
                         to_keep.append(i)
                         if i < image_pred_class.size(0) - 1:
                             ious = bbox_IoU(image_pred_class[i].unsqueeze(0), image_pred_class[i+1:])
-                            similar_bbox = np.where(ious > nms_conf)[0]
+                            similar_bbox = torch.where(ious > nms_conf)[0]
                             similar_bbox += i+1     # shift to get the real indices
                             non_max.extend(similar_bbox.tolist())
                 image_pred_class = image_pred_class[to_keep, :]
@@ -141,8 +141,10 @@ def filter_results(prediction, confidence, num_classes, nms=True, nms_conf=0.4):
             batch_ind = image_pred_class.new(image_pred_class.size(0), 1).fill_(ind)
             true_det_with_ind = torch.cat((batch_ind, image_pred_class), 1)
             output.append(true_det_with_ind)
-            
-    return torch.cat(output)
+    if len(output) > 0:
+        return torch.cat(output)
+    else:
+        return torch.Tensor([])
 
 
     

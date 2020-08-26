@@ -338,7 +338,7 @@ class Yolo(nn.Module):
                     #Let us load the weights for the Convolutional layers
                     num_weights = conv.weight.numel()
                     
-#                    noise = (torch.rand((num_weights), dtype=torch.float32) - 0.5) / 100
+                    noise = (torch.rand((num_weights), dtype=torch.float32) - 0.5) / 70
                     
                     #Do the same as above for weights
                     conv_weights = torch.from_numpy(weights[ptr:ptr+num_weights]) + noise

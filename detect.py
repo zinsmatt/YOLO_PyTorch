@@ -62,7 +62,7 @@ def load_classes(file):
 class Object(object):
     pass
 args = Object()
-args.images = "test_data" #"dog-cycle-car.png"
+args.images = "/home/matt/Downloads/animation" #"dog-cycle-car.png"
 
 args.batch_size = 1
 args.confidence = 0.5
